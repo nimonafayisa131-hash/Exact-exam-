@@ -1,6 +1,6 @@
 // ===== CONSTANTS =====
 const DEFAULT_ADMIN_USER = 'year';
-const DEFAULT_ADMIN_PASS = '2026';
+const DEFAULT_ADMIN_PASS = ' 2026';
 const SK_RESULTS   = 'eq2_results';
 const SK_ATTEMPTED = 'eq2_attempted';
 const SK_COURSES   = 'eq2_courses';
