@@ -6,6 +6,14 @@
 <title>Online Exam System</title>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<script>
+  // Applied here (before <body> paints) rather than in script.js, so the
+  // page never flashes light-mode-then-dark-mode on reload for someone
+  // who has dark mode on.
+  if (localStorage.getItem('eq2_theme') === 'dark') {
+    document.documentElement.classList.add('dark-mode');
+  }
+</script>
 </head>
 <body>
 
@@ -54,6 +62,9 @@
          screen-contact-us page (NOT a dropdown/card) — see
          updateHeaderLinks() and backFromContactUs() in script.js. -->
     <a href="javascript:void(0)" id="navbar-contact-link" class="navbar-admin-link" style="display:none" onclick="showScreen('screen-contact-us')">📞 Contact Us</a>
+    <!-- Dark mode toggle — always visible, on the right of the header.
+         See toggleDarkMode() in script.js. -->
+    <button type="button" id="navbar-theme-toggle" class="navbar-admin-link navbar-theme-btn" onclick="toggleDarkMode()" title="Toggle dark mode">🌙</button>
   </div>
 </nav>
 
@@ -411,6 +422,13 @@
 
     <!-- SETTINGS TAB -->
     <div id="tab-settings" class="tab-panel">
+      <!-- Populated by renderSiteVisits() in script.js. Each page load is
+           recorded (with a timestamp) by logSiteVisit(). -->
+      <div class="settings-card" style="margin-bottom:1.2rem">
+        <h3>🕒 Site Visits</h3>
+        <div class="setting-hint">Total page loads recorded: <strong id="site-visits-count">0</strong></div>
+        <div id="site-visits-list" style="margin-top:0.6rem;max-height:180px;overflow-y:auto"></div>
+      </div>
       <div class="section-title" style="margin-bottom:0.4rem">⚙️ Default Settings for New Courses</div>
       <div class="setting-hint" style="margin-bottom:1.2rem">Each course now has its own Time/Pass%/Shuffle settings (edit them from the Courses tab). These values are just the starting point used whenever you create a brand-new course.</div>
       <div class="settings-grid">

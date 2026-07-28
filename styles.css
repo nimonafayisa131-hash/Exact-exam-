@@ -25,6 +25,25 @@
   --shadow-lg: 0 8px 48px rgba(0,0,0,0.28);
 }
 
+/* ===== DARK MODE =====
+   Most of this app's colors are hardcoded inline styles (style="...") or
+   plain hex values scattered across this file, not CSS variables — so a
+   "swap the variables" dark theme would miss the majority of the app.
+   Instead, dark mode inverts the whole page's colors (light backgrounds
+   become dark, dark text becomes light, and the navy/gold brand hues
+   survive since hue-rotate(180deg) brings them back close to their
+   original hue after the invert). Photos and the logo are inverted a
+   second time so they cancel out and still look normal. Toggled by
+   toggleDarkMode() in script.js, which adds/removes this class on <html>. */
+html.dark-mode {
+  filter: invert(1) hue-rotate(180deg);
+  background: #fff;
+}
+
+html.dark-mode img {
+  filter: invert(1) hue-rotate(180deg);
+}
+
 body {
   font-family: 'Inter', sans-serif;
   background: #f2f2f2;
@@ -181,6 +200,14 @@ body {
 
 .app-header .navbar-admin-link.hidden {
   display: none;
+}
+
+.app-header .navbar-theme-btn {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.5rem 0.7rem;
 }
 
 /* Every screen sits below the fixed header so nothing is ever hidden behind it. */
