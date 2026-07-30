@@ -101,6 +101,42 @@ function logSiteVisit() {
 
 const FIREBASE_URL = 'https://exam-c9ed6-default-rtdb.firebaseio.com';
 
+// ===== REAL-TIME SYNC (live updates across devices/browsers) =====
+// Instead of only reading from Firebase once when the page loads
+// (syncAllFromFirebase), we also keep a live connection open. Whenever
+// admin/teacher on ANY device adds/edits/deletes something, every other
+// open browser tab gets the update automatically — no refresh needed.
+let rtdb = null;
+try {
+  firebase.initializeApp({ databaseURL: FIREBASE_URL });
+  rtdb = firebase.database();
+} catch (e) {
+  console.warn('Firebase real-time listeners unavailable, falling back to load-time sync only:', e);
+}
+
+function attachRealtimeListeners() {
+  if (!rtdb) return;
+  const bindings = [
+    { path: 'courses',    key: SK_COURSES },
+    { path: 'settings',   key: SK_SETTINGS },
+    { path: 'authorized', key: SK_AUTHORIZED },
+    { path: 'teachers',   key: SK_TEACHERS },
+    { path: 'results',    key: SK_RESULTS },
+    { path: 'attempted',  key: SK_ATTEMPTED }
+  ];
+  bindings.forEach(({ path, key }) => {
+    rtdb.ref(path).on('value', snap => {
+      const val = snap.val();
+      const fallback = key === SK_SETTINGS ? {} : [];
+      localStorage.setItem(key, JSON.stringify(val === null ? fallback : val));
+      loadData();
+      refreshVisibleAdminOrStudentView();
+    }, err => {
+      console.warn('Realtime listener error for "' + path + '":', err);
+    });
+  });
+}
+
 // ===== CLOUD FUNCTIONS (server-side grading) =====
 
 const CLOUD_FUNCTIONS_BASE_URL = 'https://us-central1-exam-c9ed6.cloudfunctions.net';
@@ -115,7 +151,14 @@ async function fbGet(key, timeoutMs = 6000) {
     return await res.json();
   } catch (e) {
     console.warn('Firebase read failed for "' + key + '":', e);
-    return null;
+    // IMPORTANT: return undefined (not null) here. null means "Firebase
+    // has this key but it's empty/deleted" — a real state we should sync
+    // locally. undefined means "we couldn't reach Firebase right now" —
+    // a transient failure that must NOT be treated as "empty," or callers
+    // like syncAllFromFirebase would overwrite real cloud data (e.g. the
+    // authorized-students list) with a blank/local copy just because of a
+    // network hiccup.
+    return undefined;
   }
 }
 
@@ -169,12 +212,17 @@ async function syncAllFromFirebase() {
   const [c, s, a, r, at, t] = await Promise.all([
     fbGet('courses'), fbGet('settings'), fbGet('authorized'), fbGet('results'), fbGet('attempted'), fbGet('teachers')
   ]);
-  if (c) localStorage.setItem(SK_COURSES, JSON.stringify(c)); else fbSet('courses', courses);
-  if (s) localStorage.setItem(SK_SETTINGS, JSON.stringify(s)); else fbSet('settings', settings);
-  if (a) localStorage.setItem(SK_AUTHORIZED, JSON.stringify(a)); else fbSet('authorized', loadAuthorized());
-  if (r) localStorage.setItem(SK_RESULTS, JSON.stringify(r)); else fbSet('results', JSON.parse(localStorage.getItem(SK_RESULTS) || '[]'));
-  if (at) localStorage.setItem(SK_ATTEMPTED, JSON.stringify(at)); else fbSet('attempted', JSON.parse(localStorage.getItem(SK_ATTEMPTED) || '[]'));
-  if (t) localStorage.setItem(SK_TEACHERS, JSON.stringify(t)); else fbSet('teachers', loadTeachers());
+  // For each key: undefined means the Firebase read failed (network hiccup,
+  // timeout, etc.) — in that case do nothing and keep whatever's already on
+  // this device. Only when the read genuinely succeeded do we either adopt
+  // the cloud copy, or (if the cloud truly has nothing yet) seed it from
+  // local. This avoids wiping real cloud data just because one read failed.
+  if (c !== undefined) { if (c) localStorage.setItem(SK_COURSES, JSON.stringify(c)); else fbSet('courses', courses); }
+  if (s !== undefined) { if (s) localStorage.setItem(SK_SETTINGS, JSON.stringify(s)); else fbSet('settings', settings); }
+  if (a !== undefined) { if (a) localStorage.setItem(SK_AUTHORIZED, JSON.stringify(a)); else fbSet('authorized', loadAuthorized()); }
+  if (r !== undefined) { if (r) localStorage.setItem(SK_RESULTS, JSON.stringify(r)); else fbSet('results', JSON.parse(localStorage.getItem(SK_RESULTS) || '[]')); }
+  if (at !== undefined) { if (at) localStorage.setItem(SK_ATTEMPTED, JSON.stringify(at)); else fbSet('attempted', JSON.parse(localStorage.getItem(SK_ATTEMPTED) || '[]')); }
+  if (t !== undefined) { if (t) localStorage.setItem(SK_TEACHERS, JSON.stringify(t)); else fbSet('teachers', loadTeachers()); }
   loadData();
   refreshVisibleAdminOrStudentView();
 }
@@ -252,6 +300,7 @@ updateHeaderLinks('screen-login');
 syncThemeButtonIcon();
 logSiteVisit();
 syncAllFromFirebase();
+attachRealtimeListeners();
 
 // ===== AUTHORIZED STUDENTS =====
 function loadAuthorized() {
@@ -700,7 +749,7 @@ function backToCourseList() {
 async function handleUnifiedLogin() {
   loadData();
   const username = document.getElementById('student-username').value.trim();
-  const password = document.getElementById('student-password').value;
+  const password = document.getElementById('student-password').value.trim();
   const err = document.getElementById('login-student-error');
 
   const lockRemaining = getLoginLockRemainingMs();
@@ -719,7 +768,7 @@ async function handleUnifiedLogin() {
     return;
   }
 
-  if (username === getAdminUsername() && await passwordMatches(password, getAdminPassword())) {
+  if (username.toLowerCase() === getAdminUsername().toLowerCase() && await passwordMatches(password, getAdminPassword())) {
     clearLoginAttempts();
     // Silently upgrade a still-plain-text admin password to a hash.
     if (!getAdminPassword().startsWith(HASH_PREFIX)) {
