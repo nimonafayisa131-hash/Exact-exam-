@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Online Exam System</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script>
+  // Applied here (before <body> paints) rather than in script.js, so the
+  // page never flashes light-mode-then-dark-mode on reload for someone
+  // who has dark mode on.
+  if (localStorage.getItem('eq2_theme') === 'dark') {
+    document.documentElement.classList.add('dark-mode');
+  }
+</script>
+</head>
+<body>
+
+<!--
+  ONLINE EXAM SYSTEM — page structure overview
+
+  This whole app lives on ONE html page. Each major step (login, choosing
+  a course, taking the exam, seeing results, the admin dashboard, etc.)
+  is its own <div class="screen">. Only one screen is visible at a time —
+  script.js's showScreen(id) adds/removes the "active" class to switch
+  between them. Popups (confirmations, the course/question editors, the
+  PDF importer) are separate <div class="modal-overlay"> blocks at the
+  bottom of the page that get shown/hidden the same way.
+
+  Screens, top to bottom:
+    1.  screen-login          - home page: ONE unified login form for
+                                 Admin, Teacher, and Student (this is also
+                                 where the logo/navbar lives)
+    2.  screen-course-select   - student picks which course to take
+    2b. screen-about-me        - student's own full profile page: exam
+                                 history by course + Student/Admin profile
+                                 cards (reached via the "👤 About Me" link
+                                 in the GLOBAL HEADER, not a dropdown/card)
+    3.  screen-exam             - the live exam (one question at a time)
+    4.  screen-result           - pass/fail score screen
+    5.  screen-review           - question-by-question answer review
+    6.  screen-blocked          - shown if a student already took this exam
+    7.  screen-admin            - the admin/teacher dashboard (Results /
+                                 Courses / Authorized Students / Settings)
+  Then further down: all the <div class="modal-overlay"> popups.
+-->
+
+<!-- GLOBAL HEADER — shown above every screen (see .app-header in styles.css) -->
+<nav class="app-header">
+  <div class="navbar-brand">
+    <img src="logo1.jpg" alt="Logo" class="navbar-logo" onerror="this.style.display='none'">
+    <span class="navbar-title">Global College</span>
+  </div>
+  <div class="navbar-links">
+    <!-- Shown only while a student is logged in and browsing the course-select/
+         exam/result/review/blocked screens. Goes straight to the full-page
+         screen-about-me (NOT a dropdown/card) via showAboutMeScreen(). -->
+    <a href="javascript:void(0)" id="navbar-about-link" class="navbar-admin-link" style="display:none" onclick="showAboutMeScreen()">👤 About Me</a>
+    <!-- Shown on every screen (logged in or not) except the live exam and
+         the Admin/Teacher dashboard. Takes the visitor to the full
+         screen-contact-us page (NOT a dropdown/card) — see
+         updateHeaderLinks() and backFromContactUs() in script.js. -->
+    <a href="javascript:void(0)" id="navbar-contact-link" class="navbar-admin-link" style="display:none" onclick="showScreen('screen-contact-us')">📞 Contact Us</a>
+    <!-- Dark mode toggle — always visible, on the right of the header.
+         See toggleDarkMode() in script.js. -->
+    <button type="button" id="navbar-theme-toggle" class="navbar-admin-link navbar-theme-btn" onclick="toggleDarkMode()" title="Toggle dark mode">🌙</button>
+  </div>
+</nav>
+
+<!-- UNIFIED LOGIN (home screen) — works for Admin, Teacher, and Student.
+     handleUnifiedLogin() in script.js checks the credentials against the
+     Admin account, then the Teacher list, then the Authorized Student
+     list (in that order) and routes to the right screen automatically. -->
+<div id="screen-login" class="screen form-page active">
+  <h1 class="welcome-heading">Welcome to Online Exam System</h1>
+  <div class="form-card">
+    <h2>Login</h2>
+    <p class="subtitle">Enter your username and password</p>
+    <div id="login-student-error" class="form-error"></div>
+    <div class="form-group">
+      <label>Username</label>
+      <input type="text" id="student-username" placeholder="username">
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input type="password" id="student-password" placeholder="••••••••">
+    </div>
+    <button class="btn btn-primary" style="width:100%;margin-top:0.5rem" onclick="handleUnifiedLogin()">Login →</button>
+  </div>
+</div>
+
+<!-- STUDENT COURSE SELECT -->
+<div id="screen-course-select" class="screen form-page">
+  <div class="form-card" style="max-width:600px">
+    <div style="display:flex;gap:0.6rem;align-items:center">
+      <button class="back-link" onclick="studentLogout()">← Back</button>
+    </div>
+    <h2>Welcome, <span id="cs-student-name">Student</span> 👋</h2>
+    <p class="subtitle" id="cs-student-meta"></p>
+    <div id="cs-error" class="form-error"></div>
+
+    <!-- List of courses available to this student's department -->
+    <div id="course-list-view">
+      <div class="course-select-list" id="course-select-list"></div>
+    </div>
+
+    <!-- Shown after a course is clicked: instructions + code entry -->
+    <div id="course-code-view" style="display:none">
+      <button class="back-link" onclick="backToCourseList()">← Back to course list</button>
+      <div class="course-code-card">
+        <div class="course-code-icon" id="ccode-icon">📚</div>
+        <h3 id="ccode-name">Course Name</h3>
+        <ul class="course-instructions" id="ccode-instructions"></ul>
+        <div class="form-group">
+          <label>Course Code</label>
+          <input type="text" id="course-code-input" placeholder="Enter the code given by your instructor">
+        </div>
+        <div id="course-code-error" class="form-error"></div>
+
+        <button class="btn btn-primary" id="course-start-btn" style="width:100%;margin-top:0.5rem" onclick="handleCourseSelectContinue()">Start Exam →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- EXAM (Moodle-style quiz layout) -->
+<div id="screen-exam" class="screen moodle-quiz">
+  <div class="moodle-page-header">
+    <div class="moodle-brand-row">
+      <div class="moodle-brand-left">
+        <span class="moodle-brand-logo">🎓</span>
+        <div class="moodle-brand-text">
+          <div class="moodle-brand-name">Global College</div>
+          <div class="moodle-brand-sub">Online Exam System</div>
+        </div>
+      </div>
+      <div class="exam-profile" id="exam-profile-wrap">
+        <button class="exam-profile-btn" onclick="toggleExamProfileMenu(event)">
+          <span class="exam-avatar" id="exam-avatar">--</span>
+          <span class="exam-profile-chevron">⌄</span>
+        </button>
+        <div class="exam-profile-menu" id="exam-profile-menu">
+          <div class="exam-profile-menu-header">
+            <span class="exam-avatar exam-avatar-lg" id="exam-avatar-lg">--</span>
+            <div>
+              <div class="exam-profile-menu-name" id="exam-profile-menu-name">Student</div>
+              <div class="exam-profile-menu-id" id="exam-profile-menu-id"></div>
+            </div>
+          </div>
+          <button class="exam-profile-menu-item" onclick="openEditProfile()">✏️ Edit Profile</button>
+          <div class="exam-profile-menu-item exam-profile-menu-static" id="exam-profile-menu-grade">🎓 Department: —</div>
+          <button class="exam-profile-menu-item danger" onclick="confirmExitExam()">🚪 Logout</button>
+        </div>
+      </div>
+    </div>
+
+    <button class="moodle-back-pill" onclick="confirmExitExam()">← Back</button>
+
+    <div class="moodle-heading-row">
+      <h1 class="moodle-exam-heading" id="exam-student-label">Course Name</h1>
+      <div class="moodle-timer-box">
+        <span class="moodle-timer-label">Time left</span>
+        <span class="moodle-timer-value" id="timer-display">20:00</span>
+      </div>
+    </div>
+    <p class="moodle-exam-subheading" id="exam-q-label">Question 1 / 10</p>
+  </div>
+  <div class="exam-progress-bar"><div class="exam-progress-fill" id="exam-progress"></div></div>
+
+  <div class="moodle-quiz-body">
+    <!-- SIDEBAR: current question's status card -->
+    <aside class="moodle-sidebar">
+      <div class="moodle-q-info-box">
+        <div class="moodle-q-info-title" id="q-counter">Question 1</div>
+        <div class="moodle-q-info-status" id="q-answer-status">Not yet answered</div>
+        <div class="moodle-q-info-marks">Marked out of 1.00</div>
+        <button class="moodle-flag-btn" id="q-flag-btn" onclick="toggleFlagQuestion()">🏳️ Flag question</button>
+      </div>
+    </aside>
+
+    <!-- MAIN: question + options + page nav -->
+    <main class="moodle-main">
+      <div class="question-text" id="q-text"></div>
+      <div class="options-list moodle-options" id="q-options"></div>
+      <div class="moodle-page-nav">
+        <button class="btn-nav btn-prev" id="btn-prev" onclick="prevQuestion()">← Previous page</button>
+        <button class="btn-nav btn-next-q" id="btn-next" onclick="nextQuestion()">Next page →</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- QUIZ NAVIGATION: jump straight to any question -->
+  <div class="moodle-quiznav-block">
+    <div class="moodle-quiznav-title">Quiz navigation</div>
+    <div class="q-nav-grid" id="q-nav-grid"></div>
+  </div>
+</div>
+
+
+
+<!-- RESULT -->
+<div id="screen-result" class="screen" style="align-items:center;justify-content:center;padding:2rem;padding-top:90px;background:linear-gradient(135deg,var(--navy) 0%,var(--navy-mid) 100%)">
+  <div class="result-card" id="result-card">
+    <div class="result-score-ring">
+      <svg viewBox="0 0 140 140">
+        <circle class="bg" cx="70" cy="70" r="60"/>
+        <circle class="fill" id="result-circle" cx="70" cy="70" r="60" stroke-dasharray="376.99" stroke-dashoffset="376.99"/>
+      </svg>
+      <div class="result-score-text">
+        <div class="pct" id="result-pct">0%</div>
+        <div class="lbl">Score</div>
+      </div>
+    </div>
+    <h2 id="result-heading">Congratulations!</h2>
+    <p id="result-name-line"></p>
+    <div class="result-stats">
+      <div class="stat-box correct"><div class="num" id="res-correct">0</div><div class="lbl">Correct</div></div>
+      <div class="stat-box wrong"><div class="num" id="res-wrong">0</div><div class="lbl">Wrong</div></div>
+      <div class="stat-box total"><div class="num" id="res-total">0</div><div class="lbl">Total</div></div>
+    </div>
+    <div class="result-status" id="result-status"></div>
+    <div class="submitted-note">✅ Your result has been submitted to Admin successfully.</div>
+    <div class="result-actions no-print">
+      <button class="btn btn-blue" onclick="downloadResult()">⬇️ Download Result</button>
+      <button class="btn btn-secondary" onclick="studentLogout()">🏠 Back to Home</button>
+    </div>
+  </div>
+</div>
+
+<!-- REVIEW ANSWERS SCREEN -->
+<div id="screen-review" class="screen">
+  <div class="review-header">
+    <div class="review-header-info">
+      <h3>📋 Answer Review</h3>
+      <p id="review-subtitle"></p>
+    </div>
+    <button class="btn btn-outline-white" onclick="showScreen('screen-result')">← Back to Result</button>
+  </div>
+  <div class="review-body" id="review-body"></div>
+</div>
+
+<!-- BLOCKED -->
+<div id="screen-blocked" class="screen">
+  <div class="blocked-card">
+    <div class="blocked-icon">🚫</div>
+    <h2>Already Attempted</h2>
+    <p>Student ID <strong id="blocked-id"></strong> has already taken the <strong id="blocked-course"></strong> exam.<br><br>Each student may only take each course exam once.</p>
+  </div>
+</div>
+
+<!-- ADMIN DASHBOARD -->
+<div id="screen-admin" class="screen">
+  <div class="admin-header">
+    <div>
+      <h2 id="admin-dashboard-title">🎓 Admin Dashboard</h2>
+      <span id="admin-dashboard-subtitle">Online Exam System — Full Control</span>
+    </div>
+    <button class="btn btn-outline-white" onclick="adminLogout()">Logout →</button>
+  </div>
+  <div class="admin-tabs">
+    <button class="tab-btn active" onclick="switchTab('tab-results',this)">📊 Results</button>
+    <button class="tab-btn admin-only-tab" onclick="switchTab('tab-courses',this)">📚 Courses</button>
+    <button class="tab-btn admin-only-tab" onclick="switchTab('tab-students',this)">👥 Authorized Students</button>
+    <button class="tab-btn admin-only-tab" onclick="switchTab('tab-teachers',this)">👨‍🏫 Teachers</button>
+    <button class="tab-btn admin-only-tab" onclick="switchTab('tab-settings',this)">⚙️ Settings</button>
+  </div>
+  <div class="admin-body">
+
+    <!-- RESULTS TAB -->
+    <div id="tab-results" class="tab-panel active">
+      <div class="admin-stats">
+        <div class="admin-stat-card courses"><div class="label">Total Courses</div><div class="value" id="stat-courses">0</div></div>
+        <div class="admin-stat-card"><div class="label">Students Tested</div><div class="value" id="stat-total">0</div></div>
+        <div class="admin-stat-card pass"><div class="label">Passed</div><div class="value" id="stat-pass">0</div></div>
+        <div class="admin-stat-card fail"><div class="label">Failed</div><div class="value" id="stat-fail">0</div></div>
+      </div>
+      <div class="top-row">
+        <div class="section-title" style="margin-bottom:0">📋 Student Results</div>
+        <div class="results-filter">
+          <select class="filter-select" id="filter-dept" onchange="loadResultsTab()">
+            <option value="">All Departments</option>
+            <option>Computer Science</option>
+            <option>WDDBA</option>
+            <option>HNS</option>
+            <option>Nurse</option>
+            <option>Other</option>
+          </select>
+          <select class="filter-select" id="filter-course" onchange="loadResultsTab()">
+            <option value="">All Courses</option>
+          </select>
+          <button class="btn btn-blue btn-sm" onclick="downloadResultsCSV()">⬇️ Download</button>
+          <button class="clear-btn admin-only-tab" id="btn-clear-results" onclick="confirmClearAll()">🗑️ Clear All</button>
+        </div>
+      </div>
+      <div class="results-table-wrap" style="margin-top:1rem">
+        <table class="results-table">
+          <thead>
+            <tr><th>#</th><th>Name</th><th>ID</th><th>Dept</th><th>Course</th><th>Score</th><th>Correct/Total</th><th>Status</th><th>Time Taken</th><th>Date</th></tr>
+          </thead>
+          <tbody id="results-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- COURSES TAB -->
+    <div id="tab-courses" class="tab-panel">
+      <div id="view-courses">
+        <!-- Level 1: list of departments (click one to see its courses) -->
+        <div id="dept-list-view">
+          <div class="top-row">
+            <div class="section-title" style="margin-bottom:0">🏫 Departments</div>
+            <button class="btn btn-primary btn-sm" onclick="openAddCourse()">+ Add Course</button>
+          </div>
+          <div class="courses-grid-inner" id="dept-grid"></div>
+        </div>
+        <!-- Level 2: courses belonging to one department -->
+        <div id="dept-courses-view" style="display:none">
+          <div class="top-row">
+            <button class="q-panel-back" onclick="backToDeptList()">← Departments</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddCourse()">+ Add Course</button>
+          </div>
+          <div class="section-title" id="dept-courses-title" style="margin:0.8rem 0"></div>
+          <div class="courses-grid-inner" id="dept-courses-grid"></div>
+        </div>
+      </div>
+      <div id="view-questions" style="display:none">
+        <div class="q-panel-header">
+          <button class="q-panel-back" onclick="backToCourses()">← Courses</button>
+          <div>
+            <div class="q-panel-title" id="qpanel-course-name">Course Questions</div>
+            <div style="font-size:0.78rem;color:var(--gray-600);margin-top:0.1rem" id="qpanel-q-count"></div>
+          </div>
+          <div style="margin-left:auto;display:flex;gap:0.5rem">
+            <button class="btn btn-secondary btn-sm" onclick="openPdfUpload()">📄 Upload PDF</button>
+            <button class="btn btn-primary btn-sm" onclick="openAddQuestion()">+ Add Question</button>
+          </div>
+        </div>
+        <div class="q-list" id="q-list"></div>
+      </div>
+    </div>
+
+    <!-- AUTHORIZED STUDENTS TAB -->
+    <div id="tab-students" class="tab-panel">
+      <div class="admin-stats">
+        <div class="admin-stat-card courses"><div class="label">Authorized Students</div><div class="value" id="stat-authorized">0</div></div>
+      </div>
+
+      <div class="settings-card" style="margin-bottom:1.2rem">
+        <h3>➕ Add a Single Authorized Student</h3>
+        <div class="setting-hint" style="margin-bottom:0.8rem">Fill in the student's information here. The student will only need their Username and Password to log in and pick a course — they won't enter any of these details themselves.</div>
+        <div class="opts-grid">
+          <div class="form-group" style="margin-bottom:0"><label>Student ID</label><input type="text" id="auth-id" placeholder="e.g. CS/1234/15"></div>
+          <div class="form-group" style="margin-bottom:0"><label>Full Name</label><input type="text" id="auth-name" placeholder="Full name"></div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>Department</label>
+            <select id="auth-dept">
+              <option value="">-- Select --</option>
+              <option>Computer Science</option>
+              <option>WDDBA</option>
+              <option>HNS</option>
+              <option>Nurse</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0"><label>Username</label><input type="text" id="auth-username" placeholder="e.g. nimona"></div>
+          <div class="form-group" style="margin-bottom:0"><label>Password</label><input type="text" id="auth-password" placeholder="e.g. 6345"></div>
+        </div>
+        <div id="auth-error" class="form-error"></div>
+        <div style="margin-top:1rem;display:flex;justify-content:flex-end">
+          <button class="btn btn-primary btn-sm" onclick="addAuthorizedStudent()">➕ Add</button>
+        </div>
+      </div>
+
+      <div class="settings-card" style="margin-bottom:1.2rem">
+        <h3>📋 Add Multiple Students at Once (Bulk Add)</h3>
+        <div class="setting-hint" style="margin-bottom:0.8rem">One student per line, comma-separated, in this order: <code>ID, Full Name, Department, Username, Password</code></div>
+        <div class="form-group">
+          <textarea id="auth-bulk" rows="5" placeholder="", Kadir Ahmed, Computer Science, kadir.ahmed, pass1234&#10;CS/1235/15, Sara Bekele, Nurse, sara.bekele, pass5678"></textarea>
+        </div>
+        <div style="display:flex;justify-content:flex-end">
+          <button class="btn btn-secondary btn-sm" onclick="addAuthorizedBulk()">📋 Add List</button>
+        </div>
+      </div>
+
+      <div class="top-row">
+        <div class="section-title" style="margin-bottom:0">👥 List of Authorized Students</div>
+        <button class="clear-btn" onclick="confirmClearAuthorized()">🗑️ Delete All</button>
+      </div>
+      <div class="results-table-wrap" style="margin-top:1rem">
+        <table class="results-table">
+          <thead><tr><th>#</th><th>Student ID</th><th>Full Name</th><th>Dept</th><th>Username</th><th>Password</th><th></th></tr></thead>
+          <tbody id="authorized-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TEACHERS TAB -->
+    <div id="tab-teachers" class="tab-panel">
+      <div class="admin-stats">
+        <div class="admin-stat-card courses"><div class="label">Teacher Accounts</div><div class="value" id="stat-teachers">0</div></div>
+      </div>
+
+      <div class="settings-card" style="margin-bottom:1.2rem">
+        <h3>➕ Add a Teacher</h3>
+        <div class="setting-hint" style="margin-bottom:0.8rem">Create a login for a teacher and choose which course(s) they're permitted to see results for. A teacher can only log in and view results — not edit courses, students, or settings.</div>
+        <div class="opts-grid">
+          <div class="form-group" style="margin-bottom:0"><label>Full Name</label><input type="text" id="teach-name" placeholder="Full name"></div>
+          <div class="form-group" style="margin-bottom:0"><label>Username</label><input type="text" id="teach-username" placeholder="e.g. likisa"></div>
+          <div class="form-group" style="margin-bottom:0"><label>Password</label><input type="text" id="teach-password" placeholder="e.g. 6345"></div>
+        </div>
+        <div class="form-group" style="margin-top:0.8rem">
+          <label>Courses this teacher can see results for</label>
+          <div id="teach-course-checks" class="opts-grid" style="margin-top:0.4rem"></div>
+        </div>
+        <div id="teach-error" class="form-error"></div>
+        <div style="margin-top:1rem;display:flex;justify-content:flex-end">
+          <button class="btn btn-primary btn-sm" onclick="addTeacher()">➕ Add Teacher</button>
+        </div>
+      </div>
+
+      <div class="top-row">
+        <div class="section-title" style="margin-bottom:0">👨‍🏫 List of Teachers</div>
+        <button class="clear-btn" onclick="confirmClearTeachers()">🗑️ Delete All</button>
+      </div>
+      <div class="results-table-wrap" style="margin-top:1rem">
+        <table class="results-table">
+          <thead><tr><th>#</th><th>Full Name</th><th>Username</th><th>Password</th><th>Permitted Courses</th><th></th></tr></thead>
+          <tbody id="teachers-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- SETTINGS TAB -->
+    <div id="tab-settings" class="tab-panel">
+      <!-- Populated by renderSiteVisits() in script.js. Each page load is
+           recorded (with a timestamp) by logSiteVisit(). -->
+      <div class="settings-card" style="margin-bottom:1.2rem">
+        <h3>🕒 Site Visits</h3>
+        <div class="setting-hint">Total page loads recorded: <strong id="site-visits-count">0</strong></div>
+        <div id="site-visits-list" style="margin-top:0.6rem;max-height:180px;overflow-y:auto"></div>
+      </div>
+      <div class="section-title" style="margin-bottom:0.4rem">⚙️ Default Settings for New Courses</div>
+      <div class="setting-hint" style="margin-bottom:1.2rem">Each course now has its own Time/Pass%/Shuffle settings (edit them from the Courses tab). These values are just the starting point used whenever you create a brand-new course.</div>
+      <div class="settings-grid">
+        <div class="settings-card">
+          <h3>⏱️ Time & Passing</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">Exam Duration (minutes)</div><div class="setting-hint">Default for new courses</div></div>
+            <input type="number" class="setting-input" id="set-time" min="1" max="180" value="20">
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Pass Percentage (%)</div><div class="setting-hint">Default for new courses</div></div>
+            <input type="number" class="setting-input" id="set-pass" min="1" max="100" value="50">
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Questions Per Exam</div><div class="setting-hint">0 = use all questions</div></div>
+            <input type="number" class="setting-input" id="set-qcount" min="0" max="200" value="0">
+          </div>
+        </div>
+        <div class="settings-card">
+          <h3>🔀 Shuffle Options</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">Shuffle Questions</div><div class="setting-hint">Different order per student</div></div>
+            <label class="toggle"><input type="checkbox" id="set-shuffle-q" checked><span class="toggle-slider"></span></label>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Shuffle Answer Options</div><div class="setting-hint">A/B/C/D randomized per student</div></div>
+            <label class="toggle"><input type="checkbox" id="set-shuffle-a" checked><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+      </div>
+      <div class="setting-hint" style="margin-top:0.6rem">🔁 Retakes are now controlled per-course — open a course in the Courses tab and use its "Allow Retake" switch.</div>
+      <!-- AI API Key Card -->
+      <div class="settings-card" style="margin-top:1.2rem">
+        <h3>🤖 AI PDF Extraction Key</h3>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.6rem">
+          <div>
+            <div class="setting-label">Anthropic API Key</div>
+            <div class="setting-hint">Enter an API key for the PDF Upload feature to work. Get one from <a href="https://console.anthropic.com" target="_blank" style="color:darkorange">console.anthropic.com</a>.</div>
+          </div>
+          <div style="display:flex;gap:0.5rem;width:100%">
+            <input type="password" id="set-api-key" placeholder="sk-ant-..." 
+              style="flex:1;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.85rem;font-family:monospace">
+            <button onclick="toggleApiKeyVisibility()" id="api-key-eye"
+              style="padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:#f0f0f0;color:#004346;cursor:pointer;font-size:1rem">👁️</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Admin Profile Card -->
+      <div class="settings-card" style="margin-top:1.2rem">
+        <h3>🧑‍💼 Admin Profile</h3>
+        <div class="setting-hint" style="margin-bottom:0.8rem">Shown on the full "Contact Us" page, so users know who to contact for help.</div>
+        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+          <img id="admin-photo-preview" src="" alt="" style="width:72px;height:72px;border-radius:50%;object-fit:cover;background:#e2e2e2;display:none;border:2px solid #004346">
+          <div id="admin-photo-placeholder" style="width:72px;height:72px;border-radius:50%;background:#e2e2e2;display:flex;align-items:center;justify-content:center;font-size:1.8rem;color:#888">🧑‍💼</div>
+          <div>
+            <input type="file" id="admin-photo-input" accept="image/*" onchange="handleAdminPhotoUpload(event)" style="display:none">
+            <button class="btn btn-secondary" onclick="document.getElementById('admin-photo-input').click()">📷 Upload Photo</button>
+          </div>
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:1rem">
+          <div class="setting-label">Full Name</div>
+          <input type="text" id="admin-profile-name" placeholder="e.g. Nimona Fayi"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Role / Title</div>
+          <input type="text" id="admin-profile-role" placeholder="e.g. Exam Administrator"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Email</div>
+          <input type="email" id="admin-profile-email" placeholder="admin@example.com"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Phone Number</div>
+          <input type="text" id="admin-profile-phone" placeholder="e.g. +251 9xx xxx xxx"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Facebook Link</div>
+          <input type="url" id="admin-profile-facebook" placeholder="e.g. https://facebook.com/yourpage"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Telegram Link</div>
+          <input type="url" id="admin-profile-telegram" placeholder="e.g. https://t.me/yourusername"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">WhatsApp Link</div>
+          <input type="url" id="admin-profile-whatsapp" placeholder="e.g. https://wa.me/2519xxxxxxxx"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Office / Location</div>
+          <input type="text" id="admin-profile-location" placeholder="e.g. Global College, Room 12"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Office Hours</div>
+          <input type="text" id="admin-profile-hours" placeholder="e.g. Mon–Fri, 8:30 AM – 5:00 PM"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+      </div>
+
+      <!-- Change Admin Login Card -->
+      <div class="settings-card admin-only-tab" style="margin-top:1.2rem">
+        <h3>🔑 Change Admin Login</h3>
+        <div class="setting-hint" style="margin-bottom:0.8rem">Update the username/password used to log in as Admin. Requires your current password.</div>
+        <div id="admin-login-msg" class="form-error" style="margin-bottom:0.6rem"></div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem">
+          <div class="setting-label">Current Password</div>
+          <input type="password" id="admin-current-pass" placeholder="••••••••"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">New Username</div>
+          <input type="text" id="admin-new-username" placeholder="admin"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">New Password</div>
+          <input type="password" id="admin-new-pass" placeholder="Leave blank to keep current password"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem;margin-top:0.8rem">
+          <div class="setting-label">Confirm New Password</div>
+          <input type="password" id="admin-confirm-pass" placeholder="••••••••"
+            style="width:100%;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.9rem">
+        </div>
+        <div style="margin-top:1rem;display:flex;justify-content:flex-end">
+          <button class="btn btn-primary" onclick="changeAdminCredentials()">🔒 Update Login</button>
+        </div>
+      </div>
+
+      <div style="margin-top:1.5rem;display:flex;justify-content:flex-end">
+        <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+      </div>
+      <div id="settings-msg" class="form-success" style="margin-top:1rem"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- MODAL: Exit Exam Early -->
+<div class="modal-overlay" id="exit-exam-modal">
+  <div class="modal modal-center">
+    <h3>Logout of the Exam?</h3>
+    <p>You haven't submitted yet. Your progress is saved, so you can log back in (even on a different device) and continue where you left off — but no answers will be sent to Admin until you submit. Are you sure you want to leave?</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('exit-exam-modal')">Stay in Exam</button>
+      <button class="btn btn-danger" onclick="exitExamConfirmed()">🚪 Yes, Logout</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Left the Exam Tab/Window (anti-cheating warning) -->
+<div class="modal-overlay" id="tab-warning-modal">
+  <div class="modal modal-center">
+    <h3>⚠️ Warning <span id="tab-warning-count">1</span> / 2</h3>
+    <p>You left the exam screen (switched tabs, apps, or minimized the window). This is not allowed during the exam.
+      If this happens a third time, your exam will be <strong>submitted automatically</strong> with your current answers.</p>
+    <div class="modal-btns">
+      <button class="btn btn-primary" onclick="closeModal('tab-warning-modal')">I Understand — Continue Exam</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Edit Profile -->
+<div class="modal-overlay" id="edit-profile-modal">
+  <div class="modal">
+    <h3>✏️ Edit Profile</h3>
+    <p class="modal-sub">Update your name, username, or password. This will not affect your exam in progress.</p>
+    <div id="edit-profile-error" class="form-error"></div>
+    <div class="form-group"><label>Full Name</label><input type="text" id="ep-name" placeholder="Full name"></div>
+    <div class="form-group"><label>Username</label><input type="text" id="ep-username" placeholder="username"></div>
+    <div class="form-group"><label>Password</label><input type="text" id="ep-password" placeholder="password"></div>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('edit-profile-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditedProfile()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- MODAL: Student History (all courses one student has taken) -->
+<div class="modal-overlay" id="student-history-modal">
+  <div class="modal modal-center" style="max-width:600px;text-align:left">
+    <h3 id="student-history-title">Student History</h3>
+    <div id="student-history-summary" style="margin:0.4rem 0 1rem;color:#64748B;font-size:0.9rem"></div>
+    <div style="max-height:50vh;overflow-y:auto">
+      <table class="results-table">
+        <thead>
+          <tr><th>Course</th><th>Score</th><th>Status</th><th>Date</th></tr>
+        </thead>
+        <tbody id="student-history-tbody"></tbody>
+      </table>
+    </div>
+    <div class="modal-btns" style="margin-top:1rem">
+      <button class="btn btn-secondary" onclick="closeModal('student-history-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ABOUT ME — student's own full profile page, restyled to match the
+     admin's screen-contact-us page: a navy->teal gradient hero up top
+     (avatar/name/quick-stats) followed by plain labeled sections below,
+     instead of the old boxed "profile-card". Opened via the "👤 About Me"
+     link in the GLOBAL HEADER (app-header). Two internal views inside
+     the same screen:
+       1. my-history-course-list-view — profile details + courses this
+          student has taken (tap one to drill in)
+       2. my-history-detail-view — every attempt for the tapped course
+     Populated by showAboutMeScreen() / renderMyProfileCard() /
+     showMyHistoryCourseDetail() in script.js. -->
+<div id="screen-about-me" class="screen contact-page">
+
+  <div class="contact-hero">
+    <button class="back-link" onclick="showScreen('screen-course-select')">← Back</button>
+    <div class="contact-hero-eyebrow">👤 About Me</div>
+    <div class="contact-hero-photo-placeholder" id="my-profile-avatar">--</div>
+    <div class="contact-hero-name" id="my-profile-name"></div>
+    <div class="contact-hero-role" id="my-profile-stats"></div>
+  </div>
+
+  <div class="contact-body">
+
+    <div id="my-history-course-list-view">
+
+      <div class="contact-section">
+        <div class="contact-section-title">Profile</div>
+        <div class="contact-row contact-row-static contact-row-text" id="my-profile-id"></div>
+        <div class="contact-row contact-row-static contact-row-text" id="my-profile-dept"></div>
+        <div class="contact-row contact-row-static contact-row-text" id="my-profile-username"></div>
+      </div>
+
+      <div class="contact-section">
+        <div class="contact-section-title">Exam History</div>
+        <p class="subtitle" style="margin-bottom:1rem">Tap a course below to see every attempt</p>
+        <div id="my-history-course-list" style="display:flex;flex-direction:column;gap:0.6rem"></div>
+      </div>
+
+    </div>
+
+    <div id="my-history-detail-view" style="display:none">
+      <button class="back-link" onclick="backToMyHistoryCourseList()">← Back to courses</button>
+      <h2 id="my-history-detail-title">Course</h2>
+      <div style="margin-top:0.8rem">
+        <table class="results-table">
+          <thead>
+            <tr><th>Score</th><th>Status</th><th>Time</th><th>Date</th></tr>
+          </thead>
+          <tbody id="my-history-detail-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- CONTACT US — the ONE complete Admin profile page: photo, name, role,
+     email, phone, Facebook, Telegram, WhatsApp, office location and
+     office hours. Reached via the "📞 Contact Us" link in the GLOBAL
+     HEADER (app-header), from any screen — logged in or not. The old
+     small "information card" previews that used to be duplicated on the
+     Login screen and the pre-exam screen have been removed; this page is
+     now the single source of truth for admin contact info.
+
+     DESIGN NOTE: this is a full page, not a boxed "card" — the admin's
+     photo/name/role sit in a navy->teal gradient hero (matches the
+     app's existing navy/gold theme, see :root in styles.css), and the
+     contact details below are organized into plain labeled sections with
+     colored icon badges, rather than being crammed into a bordered box.
+     Populated by renderAdminContactCard() in script.js (suffix '-4'). -->
+<div id="screen-contact-us" class="screen contact-page">
+
+  <div class="contact-hero">
+    <button class="back-link" onclick="backFromContactUs()">← Back</button>
+    <div class="contact-hero-eyebrow">📞 Contact Us</div>
+    <img id="admin-contact-photo-4" class="contact-hero-photo" src="" alt="Admin" style="display:none">
+    <div id="admin-contact-photo-placeholder-4" class="contact-hero-photo-placeholder">🧑‍💼</div>
+    <div class="contact-hero-name" id="admin-contact-name-4"></div>
+    <div class="contact-hero-role" id="admin-contact-role-4"></div>
+  </div>
+
+  <div class="contact-body">
+    <!-- Shown instead of everything below if the Admin hasn't set up a profile yet. -->
+    <p id="contact-us-empty" class="subtitle" style="display:none;text-align:center;margin-top:2rem">
+      The administrator hasn't added contact details yet.
+    </p>
+
+    <div id="contact-us-content">
+
+      <div class="contact-section" id="contact-section-reach">
+        <div class="contact-section-title">Get in Touch</div>
+        <a id="admin-contact-email-4" class="contact-row" href="#">
+          <span class="contact-row-icon contact-icon-email">✉️</span>
+          <span class="contact-row-text"></span>
+        </a>
+        <a id="admin-contact-phone-4" class="contact-row" href="#">
+          <span class="contact-row-icon contact-icon-phone">📞</span>
+          <span class="contact-row-text"></span>
+        </a>
+      </div>
+
+      <div class="contact-section" id="contact-section-social">
+        <div class="contact-section-title">Message Us</div>
+        <div class="contact-icons-row">
+          <a id="admin-contact-facebook-4" class="contact-icon-btn contact-icon-facebook" href="#" target="_blank" rel="noopener" title="Facebook">
+            <span class="contact-icon-glyph">f</span>
+            <span class="contact-icon-label">Facebook</span>
+          </a>
+          <a id="admin-contact-telegram-4" class="contact-icon-btn contact-icon-telegram" href="#" target="_blank" rel="noopener" title="Telegram">
+            <span class="contact-icon-glyph">✈️</span>
+            <span class="contact-icon-label">Telegram</span>
+          </a>
+          <a id="admin-contact-whatsapp-4" class="contact-icon-btn contact-icon-whatsapp" href="#" target="_blank" rel="noopener" title="WhatsApp">
+            <span class="contact-icon-glyph">💬</span>
+            <span class="contact-icon-label">WhatsApp</span>
+          </a>
+        </div>
+      </div>
+
+      <div class="contact-section" id="contact-section-location">
+        <div class="contact-section-title">Location &amp; Hours</div>
+        <div class="contact-row contact-row-static" id="admin-contact-location-4">
+          <span class="contact-row-icon contact-icon-location">📍</span>
+          <span class="contact-row-text"></span>
+        </div>
+        <div class="contact-row contact-row-static" id="admin-contact-hours-4">
+          <span class="contact-row-icon contact-icon-hours">🕒</span>
+          <span class="contact-row-text"></span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Submit Confirm -->
+<div class="modal-overlay" id="submit-modal">
+  <div class="modal modal-center">
+    <h3>Submit Exam?</h3>
+    <p>Please review your answers before submitting. You cannot go back after submission.</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('submit-modal')">Review</button>
+      <button class="btn btn-success" id="exam-submit-btn" onclick="submitExam()">✔ Submit</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Clear All -->
+<div class="modal-overlay" id="clear-modal">
+  <div class="modal modal-center">
+    <h3>Clear All Results?</h3>
+    <p>This will delete all student results and attempt records. This cannot be undone!</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('clear-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="clearAllData()">🗑️ Clear</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Clear Authorized Students -->
+<div class="modal-overlay" id="clear-auth-modal">
+  <div class="modal modal-center">
+    <h3>Delete All Authorized Students?</h3>
+    <p>This will delete the entire list of authorized students. After that, no student will be able to take the exam until they are added again.</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('clear-auth-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="clearAllAuthorized()">🗑️ Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Clear Teachers -->
+<div class="modal-overlay" id="clear-teachers-modal">
+  <div class="modal modal-center">
+    <h3>Delete All Teachers?</h3>
+    <p>This will delete every teacher account. After that, none of them will be able to log in to view results until they are added again.</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('clear-teachers-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="clearAllTeachers()">🗑️ Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Add/Edit Course -->
+<div class="modal-overlay" id="course-modal">
+  <div class="modal course-modal">
+    <h3 id="course-modal-title">Add New Course</h3>
+    <p class="modal-sub" id="course-modal-sub">Fill in the course details</p>
+    <div id="course-modal-error" class="form-error"></div>
+    <div class="form-group"><label>Course Name</label><input type="text" id="cm-name" placeholder="e.g. SQL Fundamentals"></div>
+    <div class="form-group">
+      <label>Department</label>
+      <select id="cm-dept">
+        <option value="">-- Select --</option>
+        <option>Computer Science</option>
+        <option>WDDBA</option>
+        <option>HNS</option>
+        <option>Nurse</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div class="form-group"><label>Description (optional)</label><input type="text" id="cm-desc" placeholder="e.g. Basic SQL for Level III"></div>
+    <div class="form-group">
+      <label>Icon (emoji)</label>
+      <input type="text" id="cm-icon" placeholder="e.g. 🗄️" maxlength="4" style="width:80px">
+    </div>
+    <div class="form-group">
+      <label>Course Code</label>
+      <input type="text" id="cm-code" placeholder="e.g. SQL2026">
+      <div class="setting-hint">Students must enter this exact code before they can start this course's exam.</div>
+    </div>
+
+    <div class="course-modal-divider">🗓️ Exam Schedule (optional)</div>
+    <div class="opts-grid">
+      <div class="form-group" style="margin-bottom:0">
+        <label>Opens At</label>
+        <input type="datetime-local" id="cm-schedule-start">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Closes At</label>
+        <input type="datetime-local" id="cm-schedule-end">
+      </div>
+    </div>
+    <div class="setting-hint" style="margin-bottom:0.8rem">Leave either one blank for no restriction. Students can only start this exam within the window you set here.</div>
+
+    <div class="course-modal-divider">⚙️ This Course's Exam Settings</div>
+    <div class="opts-grid">
+      <div class="form-group" style="margin-bottom:0">
+        <label>Time Allowed (minutes)</label>
+        <input type="number" id="cm-time" min="1" value="20">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Pass Percentage (%)</label>
+        <input type="number" id="cm-pass" min="1" max="100" value="50">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Number of Questions Per Attempt</label>
+      <input type="number" id="cm-qcount" min="0" value="0">
+      <div class="setting-hint">0 = use all questions in this course.</div>
+    </div>
+    <div class="form-group" style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:0.4rem;margin:0"><input type="checkbox" id="cm-shuffleq" checked> Shuffle Questions</label>
+      <label style="display:flex;align-items:center;gap:0.4rem;margin:0"><input type="checkbox" id="cm-shufflea" checked> Shuffle Answers</label>
+      <label style="display:flex;align-items:center;gap:0.4rem;margin:0"><input type="checkbox" id="cm-retake"> 🔁 Allow Retake</label>
+    </div>
+    <div class="setting-hint" style="margin-top:-0.6rem;margin-bottom:0.8rem">When OFF (default), each student can take this course's exam only once. When ON, students can retake it as many times as they like.</div>
+
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('course-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCourse()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Delete Course -->
+<div class="modal-overlay" id="del-course-modal">
+  <div class="modal modal-center">
+    <h3>Delete Course?</h3>
+    <p>This will permanently delete the course and all its questions. Results are kept.</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('del-course-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="deleteCourse()">🗑️ Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Add/Edit Question -->
+<div class="modal-overlay" id="q-modal">
+  <div class="modal">
+    <h3 id="q-modal-title">Add Question</h3>
+    <p class="modal-sub" id="q-modal-sub">Enter the question and answer options</p>
+
+    <!-- Question Type Selector -->
+    <div class="form-group">
+      <label>Question Type</label>
+      <div class="qtype-select">
+        <button class="qtype-btn active" data-type="mcq" onclick="setQuestionType('mcq')">🔵 Multiple Choice</button>
+        <button class="qtype-btn" data-type="tf" onclick="setQuestionType('tf')">✅ True / False</button>
+      </div>
+    </div>
+
+    <div class="form-group"><label>Question</label><textarea id="qm-question" placeholder="Type your question here..."></textarea></div>
+
+    <!-- MCQ options -->
+    <div id="qm-mcq-section">
+      <div class="opts-grid">
+        <div class="form-group" style="margin-bottom:0"><label>Option A</label><input type="text" id="qm-opt0" placeholder="Option A"></div>
+        <div class="form-group" style="margin-bottom:0"><label>Option B</label><input type="text" id="qm-opt1" placeholder="Option B"></div>
+        <div class="form-group" style="margin-bottom:0"><label>Option C</label><input type="text" id="qm-opt2" placeholder="Option C"></div>
+        <div class="form-group" style="margin-bottom:0"><label>Option D</label><input type="text" id="qm-opt3" placeholder="Option D"></div>
+      </div>
+      <div class="form-group" style="margin-top:1rem">
+        <label>Correct Answer</label>
+        <div class="correct-select">
+          <button class="correct-btn" data-idx="0" onclick="selectCorrect(0)">A</button>
+          <button class="correct-btn" data-idx="1" onclick="selectCorrect(1)">B</button>
+          <button class="correct-btn" data-idx="2" onclick="selectCorrect(2)">C</button>
+          <button class="correct-btn" data-idx="3" onclick="selectCorrect(3)">D</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- True/False options -->
+    <div id="qm-tf-section" style="display:none">
+      <div class="form-group" style="margin-top:0.5rem">
+        <label>Correct Answer</label>
+        <div class="correct-select">
+          <button class="correct-btn tf-btn" data-tf="0" onclick="selectTF(0)">✅ True</button>
+          <button class="correct-btn tf-btn" data-tf="1" onclick="selectTF(1)">❌ False</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="qm-error" class="form-error"></div>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('q-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveQuestion()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Delete Question -->
+<div class="modal-overlay" id="del-q-modal">
+  <div class="modal modal-center">
+    <h3>Delete Question?</h3>
+    <p>This question will be permanently removed.</p>
+    <div class="modal-btns">
+      <button class="btn btn-secondary" onclick="closeModal('del-q-modal')">Cancel</button>
+      <button class="btn btn-danger" onclick="deleteQuestion()">🗑️ Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: PDF Upload -->
+<div class="modal-overlay" id="pdf-modal">
+  <div class="modal" style="max-width:520px">
+    <h3>📄 Upload PDF — Auto Extract Questions</h3>
+    <p class="modal-sub">Automatically extract questions from a PDF and add them to the course</p>
+    <div id="pdf-error" class="form-error"></div>
+    <div id="pdf-success" class="form-success"></div>
+
+    <div class="form-group" style="margin-top:1rem">
+      <label>Choose PDF File</label>
+      <input type="file" id="pdf-file-input" accept=".pdf"
+        style="padding:0.6rem;border:1.5px solid #004346;border-radius:10px;background:lightgray;color:#004346;width:100%;font-size:0.9rem">
+    </div>
+
+    <div id="pdf-progress-area" style="display:none;margin-top:1rem">
+      <div style="font-size:0.85rem;color:#004346;font-weight:600;margin-bottom:0.5rem" id="pdf-status-text">📖 Reading PDF...</div>
+      <div style="background:#d3d3d3;border-radius:10px;height:8px;overflow:hidden">
+        <div id="pdf-progress-bar" style="height:100%;background:darkgreen;width:0%;transition:width 0.4s;border-radius:10px"></div>
+      </div>
+    </div>
+
+    <div id="pdf-preview-area" style="display:none;margin-top:1rem">
+      <div style="font-size:0.85rem;font-weight:600;color:#004346;margin-bottom:0.5rem">
+        📋 Questions found: <span id="pdf-q-count" style="color:darkgreen;font-size:1rem">0</span>
+        — <span style="color:darkorange;font-weight:400">Select an answer for every question, then click Save</span>
+      </div>
+      <div id="pdf-preview-list"
+        style="max-height:320px;overflow-y:auto;background:#f0f0f0;border:1px solid #004346;border-radius:10px;padding:0.8rem">
+      </div>
+    </div>
+
+    <div class="modal-btns" style="margin-top:1.5rem">
+      <button class="btn btn-secondary" onclick="closePdfModal()">Cancel</button>
+      <button class="btn btn-primary" id="pdf-extract-btn" onclick="extractFromPdf()">🔍 Extract Questions</button>
+      <button class="btn btn-success" id="pdf-save-btn" style="display:none" onclick="savePdfQuestions()">💾 Save All Questions</button>
+    </div>
+  </div>
+</div>
+
+<!-- GLOBAL FOOTER — shown below every screen's content -->
+<footer class="app-footer">
+  <div class="app-footer-inner">
+    <span class="app-footer-brand">🎓 Global College — Online Exam System</span>
+    <span class="app-footer-credit">Developed by <strong>Nimona</strong></span>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
+<script src="script.js"></script>
+</body>
+</html>
