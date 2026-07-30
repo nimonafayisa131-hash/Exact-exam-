@@ -1,0 +1,25 @@
+{
+  "name": "Global College - Online Exam System",
+  "short_name": "Exam System",
+  "description": "Global College Online Exam System",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f0f0f0",
+  "theme_color": "#004346",
+  "icons": [
+    {
+      "src": "logo1.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "logo1.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}
