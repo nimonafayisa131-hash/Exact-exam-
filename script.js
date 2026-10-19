@@ -2200,7 +2200,6 @@ function loadSettingsUI() {
   document.getElementById('set-qcount').value = settings.qCount || 0;
   document.getElementById('set-shuffle-q').checked = settings.shuffleQ !== false;
   document.getElementById('set-shuffle-a').checked = settings.shuffleA !== false;
-  document.getElementById('set-api-key').value = localStorage.getItem('eq2_api_key') || '';
   document.getElementById('admin-new-username').value = getAdminUsername();
   document.getElementById('admin-current-pass').value = '';
   document.getElementById('admin-new-pass').value = '';
@@ -2376,17 +2375,10 @@ function saveSettings() {
   fbSet('settings', settings);
   renderAdminContactCard();
   updateHeaderLinks('screen-admin');
-  const apiKey = document.getElementById('set-api-key').value.trim();
-  if (apiKey) localStorage.setItem('eq2_api_key', apiKey);
   const msg = document.getElementById('settings-msg');
   msg.textContent = '✅ Settings saved successfully!';
   msg.classList.add('show');
   setTimeout(() => msg.classList.remove('show'), 3000);
-}
-
-function toggleApiKeyVisibility() {
-  const input = document.getElementById('set-api-key');
-  input.type = input.type === 'password' ? 'text' : 'password';
 }
 
 // ===== KEYBOARD SHORTCUTS =====
@@ -2418,52 +2410,82 @@ function closePdfModal() {
 
 async function extractFromPdf() {
   const fileInput = document.getElementById('pdf-file-input');
-  const file = fileInput.files[0];
+  const files = Array.from(fileInput.files || []);
 
-  if (!file) { showPdfError('Please choose a PDF file first!'); return; }
+  if (files.length === 0) { showPdfError('Please choose at least one PDF file first!'); return; }
 
   hidePdfError(); hidePdfSuccess();
   document.getElementById('pdf-preview-area').style.display = 'none';
   document.getElementById('pdf-extract-btn').disabled = true;
   document.getElementById('pdf-extract-btn').textContent = '⏳ Working...';
   document.getElementById('pdf-save-btn').style.display = 'none';
-  setPdfProgress(10, '📖 Reading PDF...');
+  setPdfProgress(5, `📖 Reading ${files.length} file(s)...`);
   document.getElementById('pdf-progress-area').style.display = 'block';
 
+  const allQuestions = [];
+  const failedFiles = [];
+
   try {
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let fullText = '';
+    for (let f = 0; f < files.length; f++) {
+      const file = files[f];
+      const fileLabel = `[${f + 1}/${files.length}] ${file.name}`;
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const lines = {};
-      content.items.forEach(item => {
-        const y = Math.round(item.transform[5]);
-        if (!lines[y]) lines[y] = [];
-        lines[y].push(item.str);
-      });
-      const sortedY = Object.keys(lines).map(Number).sort((a, b) => b - a);
-      sortedY.forEach(y => { fullText += lines[y].join(' ') + '\n'; });
-      setPdfProgress(10 + Math.round((i / pdf.numPages) * 40), `📖 Reading page ${i}/${pdf.numPages}...`);
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        let fullText = '';
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const lines = {};
+          content.items.forEach(item => {
+            const y = Math.round(item.transform[5]);
+            if (!lines[y]) lines[y] = [];
+            lines[y].push(item.str);
+          });
+          const sortedY = Object.keys(lines).map(Number).sort((a, b) => b - a);
+          sortedY.forEach(y => { fullText += lines[y].join(' ') + '\n'; });
+
+          // Overall progress: file f of files.length, page i of pdf.numPages,
+          // mapped into the 5–80% range (parsing + rest reserved after).
+          const fileShare = 75 / files.length;
+          const pageProgress = (i / pdf.numPages) * fileShare;
+          const doneFilesShare = (f / files.length) * 75;
+          setPdfProgress(5 + Math.round(doneFilesShare + pageProgress), `📖 Reading ${fileLabel} — page ${i}/${pdf.numPages}...`);
+        }
+
+        if (fullText.trim().length < 50) {
+          failedFiles.push(`${file.name} (no readable text — may be a scanned/image PDF)`);
+          continue;
+        }
+
+        const questions = parseQuestionsFromText(fullText);
+        if (questions.length === 0) {
+          failedFiles.push(`${file.name} (no questions found)`);
+          continue;
+        }
+
+        allQuestions.push(...questions);
+      } catch (fileErr) {
+        failedFiles.push(`${file.name} (${fileErr.message})`);
+      }
     }
 
-    if (fullText.trim().length < 50) {
-      showPdfError('Could not extract text from the PDF. It may be a scanned/image PDF.');
-      resetPdfBtn(); return;
-    }
-
-    setPdfProgress(60, '🔍 Searching for questions...');
-    pdfExtractedQuestions = parseQuestionsFromText(fullText);
+    setPdfProgress(90, '🔍 Combining results...');
+    pdfExtractedQuestions = allQuestions;
     setPdfProgress(100, '✅ Done!');
 
     if (pdfExtractedQuestions.length === 0) {
-      showPdfError('Could not find any questions. The PDF should follow this format: "1. Question\\nA. ...\\nB. ...\\nC. ...\\nD. ..."');
+      showPdfError('Could not find any questions in the selected file(s). The PDF should follow this format: "1. Question\\nA. ...\\nB. ...\\nC. ...\\nD. ..."' +
+        (failedFiles.length ? '\n\nFiles with issues:\n' + failedFiles.join('\n') : ''));
       resetPdfBtn(); return;
     }
 
     showPdfPreview(pdfExtractedQuestions);
+    if (failedFiles.length) {
+      showPdfError('⚠️ Some files had issues and were skipped:\n' + failedFiles.join('\n'));
+    }
     document.getElementById('pdf-save-btn').style.display = '';
     resetPdfBtn();
 

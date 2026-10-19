@@ -484,23 +484,6 @@
         </div>
       </div>
       <div class="setting-hint" style="margin-top:0.6rem">🔁 Retakes are now controlled per-course — open a course in the Courses tab and use its "Allow Retake" switch.</div>
-      <!-- AI API Key Card -->
-      <div class="settings-card" style="margin-top:1.2rem">
-        <h3>🤖 AI PDF Extraction Key</h3>
-        <div class="setting-row" style="flex-direction:column;align-items:flex-start;gap:0.6rem">
-          <div>
-            <div class="setting-label">Anthropic API Key</div>
-            <div class="setting-hint">Enter an API key for the PDF Upload feature to work. Get one from <a href="https://console.anthropic.com" target="_blank" style="color:darkorange">console.anthropic.com</a>.</div>
-          </div>
-          <div style="display:flex;gap:0.5rem;width:100%">
-            <input type="password" id="set-api-key" placeholder="sk-ant-..." 
-              style="flex:1;padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:lightgray;color:#004346;font-size:0.85rem;font-family:monospace">
-            <button onclick="toggleApiKeyVisibility()" id="api-key-eye"
-              style="padding:0.6rem 0.8rem;border:1.5px solid #004346;border-radius:8px;background:#f0f0f0;color:#004346;cursor:pointer;font-size:1rem">👁️</button>
-          </div>
-        </div>
-      </div>
-
       <!-- Admin Profile Card -->
       <div class="settings-card" style="margin-top:1.2rem">
         <h3>🧑‍💼 Admin Profile</h3>
@@ -1016,13 +999,13 @@
 <div class="modal-overlay" id="pdf-modal">
   <div class="modal" style="max-width:520px">
     <h3>📄 Upload PDF — Auto Extract Questions</h3>
-    <p class="modal-sub">Automatically extract questions from a PDF and add them to the course</p>
+    <p class="modal-sub">Automatically extract questions from one or more PDFs and add them to the course</p>
     <div id="pdf-error" class="form-error"></div>
     <div id="pdf-success" class="form-success"></div>
 
     <div class="form-group" style="margin-top:1rem">
-      <label>Choose PDF File</label>
-      <input type="file" id="pdf-file-input" accept=".pdf"
+      <label>Choose PDF File(s)</label>
+      <input type="file" id="pdf-file-input" accept=".pdf" multiple
         style="padding:0.6rem;border:1.5px solid #004346;border-radius:10px;background:lightgray;color:#004346;width:100%;font-size:0.9rem">
     </div>
 
