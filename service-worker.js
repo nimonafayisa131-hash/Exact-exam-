@@ -1,57 +1,32 @@
-// service-worker.js
-// Caches the app shell (HTML/CSS/JS/logo) so the exam system can still
-// open and be used even with a weak or dropped internet connection.
-// Bump CACHE_NAME any time you update index.html/styles.css/script.js
-// so returning users get the new version instead of an old cached one.
+// Offline app shell. If you already have a service-worker.js, merge this in.
+const CACHE = 'wddba-exam-v1';
+const SHELL = ['./', 'index.html', 'style.css', 'script.js', 'manifest.json', 'logo1.jpg',
+  'https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/10.7.0/firebase-database-compat.js'];
 
-const CACHE_NAME = 'exam-system-cache-v1';
-const APP_SHELL = [
-  './',
-  './index.html',
-  './styles.css',
-  './script.js',
-  './manifest.json',
-  './logo1.jpg'
-];
-
-// Install: pre-cache the app shell
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
-  );
-  self.skipWaiting();
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE)
+    .then(c => Promise.all(SHELL.map(u => c.add(u).catch(() => {}))))
+    .then(() => self.skipWaiting()));
 });
-
-// Activate: clean up old cache versions
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((names) =>
-      Promise.all(
-        names
-          .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
-      )
-    )
-  );
-  self.clients.claim();
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys()
+    .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
-
-// Fetch: try the network first (so students/admins always get fresh
-// results/data when online); fall back to the cached app shell when
-// offline so the page still loads instead of showing a browser error.
-self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
-  // Only cache same-origin files (the app shell). Firebase and CDN
-  // requests always go straight to the network, untouched.
-  if (new URL(event.request.url).origin !== self.location.origin) return;
-
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        return response;
-      })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html')))
-  );
+self.addEventListener('fetch', e => {
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  const host = new URL(req.url).hostname;
+  if (host.endsWith('firebaseio.com') || host.endsWith('cloudfunctions.net')) return; // live data: never cache
+  e.respondWith(caches.match(req).then(hit => {
+    const net = fetch(req).then(res => {
+      if (res && (res.ok || res.type === 'opaque')) {
+        const copy = res.clone();
+        caches.open(CACHE).then(c => c.put(req, copy));
+      }
+      return res;
+    }).catch(() => hit);
+    return hit || net;
+  }));
 });

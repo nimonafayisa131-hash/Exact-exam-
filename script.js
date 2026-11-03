@@ -91,6 +91,7 @@ function logSiteVisit() {
   if (visits.length > 500) visits = visits.slice(visits.length - 500);
   localStorage.setItem(SK_VISITS, JSON.stringify(visits));
   fbGet('visits').then(remote => {
+    if (remote === undefined) return; // offline: don't overwrite the cloud log
     let merged = Array.isArray(remote) ? remote.slice() : [];
     merged.push({ time: visits[visits.length - 1].time });
     if (merged.length > 500) merged = merged.slice(merged.length - 500);
@@ -164,17 +165,75 @@ async function fbGet(key, timeoutMs = 6000) {
 }
 
 function fbSet(key, value) {
+  // 8s timeout: on a weak/"fake" connection fetch can hang for minutes, which
+  // would leave the Submit button stuck. On timeout we return false and the
+  // caller falls back to the offline queue.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   return fetch(`${FIREBASE_URL}/${key}.json`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(value)
+    body: JSON.stringify(value),
+    signal: controller.signal
   }).then(res => {
+    clearTimeout(timer);
     if (!res.ok) throw new Error('Firebase PUT ' + key + ' failed: ' + res.status);
     return true;
   }).catch(e => {
+    clearTimeout(timer);
     console.warn('Firebase write failed for "' + key + '":', e);
     return false;
   });
+}
+
+// ===== OFFLINE QUEUE =====
+// If the student has no internet when the exam ends, the result is kept on
+// this device and sent to Firebase automatically once the connection is back.
+const SK_PENDING = 'eq2_pending_submissions';
+const SK_LOCAL_PROGRESS = 'eq2_local_progress';
+function loadPending() { try { return JSON.parse(localStorage.getItem(SK_PENDING)) || []; } catch (e) { return []; } }
+function savePending(list) { try { localStorage.setItem(SK_PENDING, JSON.stringify(list)); } catch (e) {} }
+let flushingPending = false;
+async function flushPendingSubmissions() {
+  if (flushingPending) return;
+  const pending = loadPending();
+  if (!pending.length) return;
+  flushingPending = true;
+  try {
+    const toArr = v => (Array.isArray(v) ? v : Object.values(v || {})).filter(Boolean);
+    const [cr, ca] = await Promise.all([fbGet('results'), fbGet('attempted')]);
+    if (cr === undefined || ca === undefined) return; // still offline
+    const results = toArr(cr), attempted = toArr(ca);
+    pending.forEach(p => {
+      const dup = results.some(r => r.ts === p.record.ts && r.id === p.record.id && r.courseId === p.record.courseId);
+      if (!dup) results.push(p.record);
+      if (!attempted.includes(p.attemptKey)) attempted.push(p.attemptKey);
+    });
+    const saved = await Promise.all([fbSet('results', results), fbSet('attempted', attempted)]);
+    if (saved.includes(false)) return;
+    pending.forEach(p => {
+      const k = examProgressKeyFor(p.record.id, p.record.courseId);
+      fetch(`${FIREBASE_URL}/examProgress/${k}.json`, { method: 'DELETE' }).catch(() => {});
+    });
+    const sent = new Set(pending.map(p => p.record.ts));
+    savePending(loadPending().filter(p => !sent.has(p.record.ts)));
+    updateOfflineStatus();
+  } finally { flushingPending = false; }
+}
+window.addEventListener('online', flushPendingSubmissions);
+setInterval(flushPendingSubmissions, 30000);
+
+// Newest saved progress: Firebase copy or the on-device copy (whichever is newer).
+async function getExamProgress(studentId, courseId) {
+  const key = examProgressKeyFor(studentId, courseId);
+  const remote = await fbGet('examProgress/' + key); // undefined = offline, null = none
+  let local = null;
+  try {
+    const l = JSON.parse(localStorage.getItem(SK_LOCAL_PROGRESS) || 'null');
+    if (l && l.key === key) local = l.data;
+  } catch (_) {}
+  if (local && (!remote || (local.updatedAt || 0) > (remote.updatedAt || 0))) return local;
+  return remote;
 }
 
 // ===== EXAM PROGRESS (cross-browser resume) =====
@@ -195,7 +254,7 @@ function examProgressKeyFor(studentId, courseId) {
 
 function saveExamProgress() {
   if (!examProgressKey) return;
-  fbSet('examProgress/' + examProgressKey, {
+  const data = {
     studentId: currentStudent.id,
     courseId: currentStudent.courseId,
     courseName: currentStudent.courseName,
@@ -206,11 +265,14 @@ function saveExamProgress() {
     startedAt: examStartedAt,
     tabWarnings: examTabWarnings,
     updatedAt: Date.now()
-  });
+  };
+  try { localStorage.setItem(SK_LOCAL_PROGRESS, JSON.stringify({ key: examProgressKey, data })); } catch (_) {}
+  fbSet('examProgress/' + examProgressKey, data);
 }
 
 function clearExamProgress() {
   forgetActiveExam();
+  try { localStorage.removeItem(SK_LOCAL_PROGRESS); } catch (_) {}
   if (!examProgressKey) return;
   fetch(`${FIREBASE_URL}/examProgress/${examProgressKey}.json`, { method: 'DELETE' }).catch(() => {});
   examProgressKey = null;
@@ -350,7 +412,7 @@ function studentById(id) {
 async function resumeInProgressExam(student) {
   const sid = String(student.id).toUpperCase();
   const found = (await Promise.all(courses.map(async c => ({
-    c, p: await fbGet('examProgress/' + examProgressKeyFor(sid, c.id))
+    c, p: await getExamProgress(sid, c.id)
   }))))
     .filter(r => r.p && r.p.examQuestions)
     .sort((a, b) => (b.p.updatedAt || 0) - (a.p.updatedAt || 0))[0];
@@ -374,7 +436,7 @@ async function restoreStudentSession() {
     const student = studentById(active.studentId);
     const course = getCourse(active.courseId);
     if (student && course) {
-      const progress = await fbGet('examProgress/' + examProgressKeyFor(active.studentId, active.courseId));
+      const progress = await getExamProgress(active.studentId, active.courseId);
       if (progress) {
         loggedInStudent = student;
         rememberStudentSession();
@@ -425,6 +487,7 @@ renderAdminContactCard();
 updateHeaderLinks('screen-login');
 syncThemeButtonIcon();
 logSiteVisit();
+flushPendingSubmissions();
 const _initialSync = syncAllFromFirebase();
 attachRealtimeListeners();
 // Stay logged in after a refresh, and put a student back into the exam they
@@ -843,7 +906,9 @@ function renderCourseSelectGrid() {
   const studentDept = loggedInStudent ? loggedInStudent.dept : null;
   const visibleCourses = courses.filter(c => !c.hidden && c.dept === studentDept);
   if (!visibleCourses.length) {
-    listEl.innerHTML = `<div class="empty-state"><div class="icon">📭</div><p>No courses are available for your department yet.</p></div>`;
+    listEl.innerHTML = (!navigator.onLine && !courses.length)
+      ? `<div class="empty-state"><div class="icon">📴</div><p>You are offline and this device has not saved the courses yet. Connect to the internet once, then try again.</p></div>`
+      : `<div class="empty-state"><div class="icon">📭</div><p>No courses are available for your department yet.</p></div>`;
     return;
   }
   listEl.innerHTML = visibleCourses.map(c => {
@@ -970,6 +1035,12 @@ async function handleUnifiedLogin() {
       return;
     }
 
+    if (!navigator.onLine && !loadAuthorized().length) {
+      err.textContent = '📴 You are offline and this device has no saved data yet. Connect to the internet once to log in, then you can use the exam offline.';
+      err.classList.remove('notice-green');
+      err.classList.add('show');
+      return;
+    }
     recordFailedLogin();
     const nowLocked = getLoginLockRemainingMs();
     if (nowLocked > 0) {
@@ -1004,6 +1075,11 @@ let myHistoryResults = [];
 function showAboutMeScreen() {
   if (!loggedInStudent) return;
   const results = JSON.parse(localStorage.getItem(SK_RESULTS) || '[]');
+  // Include results still waiting to be sent, so the student sees them
+  // right away (offline, or before the sync finishes).
+  loadPending().forEach(p => {
+    if (!results.some(r => r.ts === p.record.ts && r.id === p.record.id && r.courseId === p.record.courseId)) results.push(p.record);
+  });
   myHistoryResults = results
     .filter(r => r.id === loggedInStudent.id)
     .sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -1131,7 +1207,7 @@ async function handleCourseSelectContinue() {
   const startBtn = document.getElementById('course-start-btn');
   if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Checking for saved progress…'; }
   const progressKey = examProgressKeyFor(currentStudent.id, currentStudent.courseId);
-  const existingProgress = await fbGet('examProgress/' + progressKey);
+  const existingProgress = await getExamProgress(currentStudent.id, currentStudent.courseId);
   if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start Exam →'; }
   startExam(course, existingProgress || null);
 }
@@ -1412,22 +1488,34 @@ async function submitExamInner() {
   // ----- save to Firebase (fetch fresh lists first so other students' results aren't overwritten) -----
   const toArr = v => (Array.isArray(v) ? v : Object.values(v || {})).filter(Boolean);
   const [cloudResults, cloudAttempted] = await Promise.all([fbGet('results'), fbGet('attempted')]);
-  const results = toArr(cloudResults !== undefined ? cloudResults : JSON.parse(localStorage.getItem(SK_RESULTS) || '[]'));
-  const attempted = toArr(cloudAttempted !== undefined ? cloudAttempted : JSON.parse(localStorage.getItem(SK_ATTEMPTED) || '[]'));
+  const online = cloudResults !== undefined && cloudAttempted !== undefined;
+  const results = toArr(online ? cloudResults : JSON.parse(localStorage.getItem(SK_RESULTS) || '[]'));
+  const attempted = toArr(online ? cloudAttempted : JSON.parse(localStorage.getItem(SK_ATTEMPTED) || '[]'));
   results.push(record);
   if (!attempted.includes(attemptKey)) attempted.push(attemptKey);
 
-  const saved = await Promise.all([fbSet('results', results), fbSet('attempted', attempted)]);
-  if (saved.includes(false)) {
-    alert('Could not save your result — please check your internet connection and press Submit again.');
-    restoreSubmit();
-    return;
+  let savedOnline = false;
+  if (online) {
+    const saved = await Promise.all([fbSet('results', results), fbSet('attempted', attempted)]);
+    savedOnline = !saved.includes(false);
+  }
+  if (!savedOnline) {
+    // Offline (or Firebase unreachable): keep the result on this device and
+    // send it automatically later (flushPendingSubmissions).
+    const q = loadPending();
+    q.push({ record, attemptKey });
+    savePending(q);
   }
   localStorage.setItem(SK_RESULTS, JSON.stringify(results));
   localStorage.setItem(SK_ATTEMPTED, JSON.stringify(attempted));
 
   clearExamProgress();
   showResults(correct, total, pct, passed);
+  updateOfflineStatus();
+  const note = document.querySelector('#screen-result .submitted-note');
+  if (note) note.textContent = savedOnline
+    ? '✅ Your result has been submitted to Admin successfully.'
+    : '📴 No internet. Your result is saved on this device and will be sent to Admin automatically when you are back online.';
 }
 
 // Review is allowed only when Admin turned it on for this course AND the
@@ -2912,3 +3000,27 @@ function deleteAllCoursesConfirmed() {
   if (deleteAllScope) backToDeptList(); else refreshCoursesView();
 }
 
+
+
+// ===== OFFLINE / PENDING BANNER =====
+// Bottom bar: shows when the device is offline and/or results are waiting
+// to be sent to Admin. Hidden when everything is online and synced.
+function updateOfflineStatus() {
+  let el = document.getElementById('offline-banner');
+  const offline = !navigator.onLine;
+  const n = loadPending().length;
+  if (!offline && !n) { if (el) el.style.display = 'none'; return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'offline-banner';
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:0.55rem 1rem;font-size:0.82rem;font-weight:600;text-align:center;color:#fff;';
+    document.body.appendChild(el);
+  }
+  el.style.background = offline ? '#92400e' : '#004346';
+  el.textContent = (offline ? '📴 Offline — you can keep taking your exam. ' : '') +
+    (n ? `⏳ ${n} result${n === 1 ? '' : 's'} waiting to be sent to Admin.` : 'Your answers are saved on this device.');
+  el.style.display = 'block';
+}
+window.addEventListener('online', updateOfflineStatus);
+window.addEventListener('offline', updateOfflineStatus);
+updateOfflineStatus();
