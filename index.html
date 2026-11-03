@@ -27,11 +27,7 @@
 
   This whole app lives on ONE html page. Each major step (login, choosing
   a course, taking the exam, seeing results, the admin dashboard, etc.)
-  is its own <div class="screen">. Only one screen is visible at a time —
-  script.js's showScreen(id) adds/removes the "active" class to switch
-  between them. Popups (confirmations, the course/question editors, the
-  PDF importer) are separate <div class="modal-overlay"> blocks at the
-  bottom of the page that get shown/hidden the same way.
+  is its own <div class="screen">.
 
   Screens, top to bottom:
     1.  screen-login          - home page: ONE unified login form for
